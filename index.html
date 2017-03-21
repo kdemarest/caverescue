@@ -1,3 +1,6 @@
+<script>
+// Open me at file:///C:/cygwin64/home/kdemarest/caverescue/index.html
+</script>
 <script
   src="https://code.jquery.com/jquery-3.1.1.js"
   integrity="sha256-16cdPddA6VdVInumRGo6IbivbERE8p7CQR3HzTBuELA="
@@ -37,6 +40,14 @@ a.choice:hover {
 <script>
 let game = null;
 
+Array.prototype.joinMember = function(member,delimeter) {
+	let s = this.length > 0 ? this[0][member] : '';
+	for( let i=1 ; i<this.length ; ++i ) {
+		s += delimeter + this[i][member];
+	}
+	return s;
+}
+
 function hrTime(t) {
 	function lpad(n) {
 		return (n < 10 ? '0'+n : n);
@@ -55,58 +66,140 @@ function query(a,fn) {
 
 class Chat {
 	add(source,message) {
-		let s = "<p>" + hrTime(game.time) + ' ' + source + ': ' + message + "</p>";
-		$("#chat").prepend(s);
+		let s = "<p style='background-color:red;'>" + hrTime(game.time) + ' ' + source + ': ' + message + "</p>";
+		$(s)
+		.prependTo("#chat")
+		.animate(
+			{ backgroundColor:'white' },
+			{
+				duration: 4000,
+				step: function(now,tween) {
+					//$(this).css()
+				},
+				complete: function() {
+					$(this).css({backgroundColor:'white'});
+				}
+			}
+		);
 	}
+}
+
+function Renderer(c) {
+	let xMin;
+	let xMax;
+	let yMin;
+	let yMax;
+	let xLen;
+	let yLen;
+	let xCtr;
+	let yCtr;
+	let xScale;
+	let yScale;
+	this.renderList = [];
+	let nodeArrange = {};
+
+	this.dimensionsCalc = function() {
+		xMin = 999999;
+		xMax = -999999;
+		yMin = 999999;
+		yMax = -999999;
+		$.each(this.renderList,function(index,entity) {
+			var e = entity["extent"](c)
+			xMin = Math.min(xMin,e.x);
+			xMax = Math.max(xMax,e.x);
+			yMin = Math.min(yMin,e.y);
+			yMax = Math.max(yMax,e.y);
+		});
+		xLen = xMax-xMin;
+		yLen = yMax-yMin;
+		xCtr = (xMin+xMax)/2;
+		yCtr = (yMin+yMax)/2;
+		xScale = (xMax-xMin)/c.canvas.width;
+		yScale = (yMax-yMin)/c.canvas.height;
+		if( xScale > yScale ) {
+			yLen *= xScale/yScale;
+			yMin = yCtr - yLen/2;
+			yMax = yCtr + yLen/2;
+			yScale = xScale;
+		}
+		else {
+			xLen *= yScale/xScale;
+			xMin = xCtr - xLen/2;
+			xMax = xCtr + xLen/2;
+			xScale = yScale;
+		}
+		xMargin = 0.10;	// normalized percentage
+		yMargin = 0.10;	// normalized percentage
+		xMin -= xLen*xMargin;
+		xMax += xLen*xMargin;
+		yMin -= yLen*yMargin;
+		yMax += yLen*yMargin;
+		c.dimensions = {
+			xScale: xScale, yScale: yScale,
+			xCtr: xCtr, yCtr: yCtr,
+			xLen: xLen, yLen: yLen,
+			xMargin: xMargin, yMargin: yMargin
+		}
+
+		c.xLoc = function(x) {
+			let xPct = (x-xMin)/(xMax-xMin);
+			return xPct * c.canvas.width;
+		}
+		c.yLoc = function(y) {
+			let yPct = (y-yMin)/(yMax-yMin);
+			return yPct * c.canvas.height;
+		}
+	}
+	this.renderNode = function(node) {
+		let e = node.extent(c);
+		let radius = 10;
+		let textHeight = 20;
+		c.beginPath();
+		c.strokeStyle="#000000";
+		c.arc(c.xLoc(e.x),c.yLoc(e.y)-textHeight/2.5, radius, 0, Math.PI*2, true);
+		c.stroke();
+		c.fillStyle = "black";
+		c.font = "bold "+textHeight+"px Arial";
+		c.textAlign = "center";
+		c.fillText(node.id, c.xLoc(e.x), c.yLoc(e.y));
+	}
+	this.renderPerson = function(person) {
+		var nodeId = person.nodeId;
+		if( nodeArrange[nodeId] == undefined ) {
+			nodeArrange[nodeId] = 0;
+		}
+		else {
+			nodeArrange[nodeId] +=1;
+		}
+		let xOfs = Math.cos(nodeArrange[nodeId]/8*Math.PI*2);
+		let yOfs = Math.sin(nodeArrange[nodeId]/8*Math.PI*2);
+		var e = person.extent(c);
+		let textHeight = 14;
+		c.fillStyle = "blue";
+		c.font = "bold "+textHeight+"px Arial";
+		c.textAlign = "center";
+		c.fillText(person.name[0], c.xLoc(e.x)+xOfs*textHeight, c.yLoc(e.y)+yOfs*textHeight);
+	}
+	this.render = function(c) {
+		nodeArrange = {};
+		this.dimensionsCalc(c);
+		$.each(this.renderList,function(index,entity) {
+			entity["render"](c);
+		});
+
+	}
+	return this;
 }
 
 class Map {
 	constructor() {
 		this.canvas = document.getElementById("map");
 		this.context = this.canvas.getContext("2d");
-		this.renderList = [];
 	}
 	render() {
-		var ctx = this.context;
-		ctx.canvas.width = $("#mapCell").innerWidth()-2;
-		ctx.canvas.height = $("#mapCell").innerHeight()-2;
-		let xMin = 999999;
-		let xMax = -999999;
-		let yMin = 999999;
-		let yMax = -999999;
-		$.each(this.renderList,function(index,entity) {
-			var e = entity["extent"](ctx);
-			xMin = Math.min(xMin,e.x);
-			xMax = Math.max(xMax,e.x);
-			yMin = Math.min(yMin,e.y);
-			yMax = Math.max(yMax,e.y);
-		});
-		let xRatio = (xMax-xMin)/ctx.canvas.width;
-		let yRatio = (yMax-yMin)/ctx.canvas.height;
-		let xMargin = 0.1;	// normalized percentage
-		let yMargin = 0.1;	// normalized percentage
-		if( xRatio < yRatio ) {
-			//somehow change the margin value so that the smallest rules.
-		}
-		let xLen = xMax-xMin;
-		let yLen = yMax-yMin;
-		xMin -= xLen*xMargin;
-		xMax += xLen*xMargin;
-		yMin -= yLen*yMargin;
-		yMax += yLen*yMargin;
-
-		ctx.xLoc = function(x) {
-			let xPct = (x-xMin)/(xMax-xMin);
-			return xPct * ctx.canvas.width;
-		}
-		ctx.yLoc = function(y) {
-			let yPct = (y-yMin)/(yMax-yMin);
-			return yPct * ctx.canvas.height;
-		}
-
-		$.each(this.renderList,function(index,entity) {
-			entity["render"](ctx);
-		});
+		this.context.canvas.width = $("#mapCell").innerWidth()-2;
+		this.context.canvas.height = $("#mapCell").innerHeight()-2;
+		game.renderer.render(this.context);
 	}
 	tick() {
 		this.render();
@@ -116,42 +209,65 @@ class Map {
 
 class Orders {
 	constructor() {
-		this.order = [];
-		this.state = 0;	// 0 means populate, 1/2/3 = stages, 4 means execute
+		this.order = {};
+		this.state = -1;	// 0 means populate, 1/2/3 = stages, 4 means execute
 		this.choices = {};
+		this.reset();
+	}
+	reset() {
+		this.state = 0;
+		this.order.who = "";
+		this.order.verb = "";
+		this.order.where = "";
+		var colId = '#order_choices';
+		$(colId).empty();
 	}
 	populate() {
 		this.choices.personList = query(game.mission.personList,function(person) {
-			return (!person.isPatient ? person.name : false);
+			return (!person.isPatient && !person.isYou ? person.name : false);
 		});
-		this.choices.verb = ['go to'];
+		this.choices.verb = ['search','evacuate'];
 		this.choices.landmark = query(game.mission.nodeList,function(node) {
-			return node.id;
+			return node.name ? node.name : false;
 		});
 	}
 	present(column,choices) {
 		var colId = '#order_choices';
 		$(colId).empty();
+		var self = this;
 		$.each(choices,function(index,choice) {
 			$("<a src='javascript:void 0' class='choice'>"+choice+"</a>")
 				.appendTo(colId)
 				.click( function() {
-					game.orders.order.push(choice);					
-					game.orders.stateAdvance();
+					if( self.state == 1 ) { self.order.who = choice; }
+					if( self.state == 2 ) { self.order.verb = choice; }
+					if( self.state == 3 ) { self.order.where = game.mission.nodeFindWhere('name',choice).id; }
+					self.stateAdvance();
 				})
 				.append("<br />");
 		});
 	}
+	execute() {
+		game.chat.add("You",this.summary());
+		game.mission.executeOrder(this.order);
+		this.reset();
+	}
 	stateAdvance() {
 		this.populate();
 		this.state += 1;
-		if( this.state >= 4 ) { return; }
+		if( this.state >= 4 ) {
+			this.execute();
+			return;
+		}
 		let choiceArrayList = [this.choices.personList, this.choices.verb, this.choices.landmark];
 		this.present(this.state,choiceArrayList[this.state-1]);
 		this.summarize();
 	}
+	summary() {
+		return this.order.who+' '+this.order.verb+(this.order.where?' '+game.mission.nodeList[this.order.where].name:'');
+	}
 	summarize() {
-		$('#orderSummary').html("To "+this.order.join(' ')+"");
+		$('#orderSummary').html($.trim(this.summary()) || '&nbsp;');
 	}
 	tick() {
 		if( this.state == 0 ) {
@@ -166,52 +282,128 @@ class Game {
 		this.mission = data.mission;
 		this.time = 0;
 		this.timeSpeed = 1.0;
+		this.pathFinder = new PathFinder(this.mission.nodeList);
 		this.chat = new Chat();
 		this.orders = new Orders();
 		this.map = new Map();
+		this.renderer = new Renderer(this.map.context);
 	}
 	tick() {
 		this.time++;
 		this.mission.mapPopulate();
 		this.orders.tick();
-		this.map.tick();
 		this.mission.tick();
+		this.map.tick();
 	}
 }
 
 class Person {
 	constructor(data) {
 		this.name = data.name;
-		this.node = data.node;
+		this.nodeId = data.nodeId;
 		this.isPatient = data.isPatient;
 		this.injuryList = data.injuryList;
 		this.action = data.action;
 		this.objective = data.objective;
+		this.destinationNodeId = null;
 		this.chatBuffer = [];
 		this.chatBuffer.push(this.textStatus());
 	}
-	extent(context) {
-		let x = game.mission.nodeFind(this.node).x;
-		let y = game.mission.nodeFind(this.node).y;
+	extent() {
+		let x = game.mission.nodeFindWhere('id',this.nodeId).x;
+		let y = game.mission.nodeFindWhere('id',this.nodeId).y;
 		return { x:x, y:y };
 	}
-	render(context) {
-		context.fillStyle = "blue";
-		context.font = "bold 16px Arial";
-		var e = this.extent(context);
-		context.fillText(this.name[0], context.xLoc(e.x), context.yLoc(e.y));
+	render() {
+		game.renderer.renderPerson(this);
 	}
 	textStatus() {
 		let s = [];
-		s.push( "This is "+this.name+" at node "+this.node+"." );
+		s.push( "This is "+this.name+" at node "+this.nodeId+"." );
 		if( this.injuryList ) { s.push( "I have a "+this.injuryList[0].type+' to my '+this.injuryList[0].location+'.'); }
-		s.push( "My objective is "+this.objective+".");
+		s.push( "My objective is "+this.objective+(this.destinationNodeId?' '+this.destinationNodeId:'')+".");
 		return s.join(' ');
 	}
 	chat(message) {
 		game.chat.add( this.name, message );
 	}
+	onOrder(order) {
+		var self = this;
+		if( order.verb == 'evacuate' ) {
+			self.evacuatingPersonId = undefined;
+		}
+	}
+	onFindPatient(patientsFound) {
+		let id = this.id;
+		this.chatBuffer.push("I found patient"+(patientsFound.length>1?'s':'')+' '+patientsFound.joinMember('name',', ')+'!');
+		$.each( patientsFound, function(index,person) {
+			person.foundByPersonId = id;
+		});
+		let patientsRemaining = query(game.mission.personList,function(person) {
+			return person.isPatient && !person.foundByPersonId ? person : false;
+		});
+		if( patientsRemaining.length <= 0 ) {
+			this.objective = 'wait';
+			this.destinationNodeId = null;
+			this.chatBuffer.push("Awaiting further instructions.");
+		}
+		else {
+			this.chatBuffer.push("Should I evac, or keep searching for others?");
+			this.objective = 'wait';
+			this.destinationNodeId = null;
+		}
+	}
+	onArriveAt() {
+		if( this.isPatient && this.nodeId == game.mission.lookup.node.commandNodeId ) {
+			let rescuer = game.mission.personFindWhere('evacuatingPersonId',this.id);
+			(rescuer || this).chatBuffer.push("Patient "+this.name+" has been rescued!");
+		}
+	}
+	act() {
+		var self = this;
+		let effort = 0.01;
+		let duration = 1;
+		if( this.objective == 'wait' ) {
+			// Do nothing.
+		}
+		if( this.objective == 'search' ) {
+			duration = 2;
+		}
+		if( this.objective == 'evacuate' ) {
+			duration = 2;
+			if( !this.evacuatingPersonId ) {
+				$.each(game.mission.personList,function(personId,person) {
+					if( !self.isPatient && person.isPatient && person.nodeId == self.nodeId ) {
+						self.chatBuffer.push("I am evacuating "+person.name+" to "+game.mission.nodeList[self.destinationNodeId].name+".");
+						self.evacuatingPersonId = person.id;
+						person.objective = 'evacuate';
+						person.destinationNodeId = self.destinationNodeId;
+					}
+				});
+			}
+		}
+		if( this.objective == 'asking' ) {
+			duration = 2;
+		}
+		if( this.destinationNodeId !== null && this.destinationNodeId != this.nodeId ) {
+			let path = game.pathFinder.find(this.nodeId,this.destinationNodeId);
+			if( path !== false && path.length > 1 && this.nodeId != path[1] ) {
+				//this.chatBuffer.push("path: "+path.join('->'));
+				this.nodeId = path[1];
+				this.onArriveAt(this.nodeId);
+			}
+		}
+		if( !this.isPatient ) {
+			let patientsFound = query(game.mission.personList,function(person) {
+				return self.nodeId == person.nodeId && person.isPatient && !person.foundByPersonId ? person : false;
+			});
+			if( patientsFound.length > 0 ) {
+				this.onFindPatient(patientsFound);
+			}
+		}
+	}
 	tick() {
+		this.act();
 		while( this.chatBuffer.length > 0 ) {
 			let message = this.chatBuffer.shift();
 			if( typeof(message) == 'function' ) {
@@ -226,107 +418,211 @@ class Node {
 	constructor(data) {
 		this.id = data.id;
 		this.name = data.name;
+		this.isCommand = data.isCommand;
+		this.isEntrance = data.isEntrance;
 		this.x = data.x;
 		this.y = data.y;
 		this.connectionList = data.connectionList;
 	}
-	extent(context) {
+	extent() {
 		return { x: this.x, y: this.y };
 	}
-	render(context) {
-		let e = this.extent(context);
-		context.beginPath();
-		context.strokeStyle="#000000";
-		let radius = 10;
-		let textHeight = 20;
-    	context.arc(context.xLoc(e.x),context.yLoc(e.y)-textHeight/2, radius, 0, Math.PI*2, true);
-		context.stroke();
-		context.fillStyle = "black";
-		context.font = "bold "+textHeight+"px Arial";
-		context.textAlign = "center";
-		context.fillText(this.id, context.xLoc(e.x), context.yLoc(e.y));
+	render() {
+		game.renderer.renderNode(this);
+	}
+}
+class PathFinder {
+	constructor(nodeList,personList) {
+		this.nodeList = nodeList;
+		this.personList = personList;
+	}
+	find(startNodeId,endNodeId) {
+		var nodeList = this.nodeList;
+		let from = {};
+		if( !nodeList[startNodeId] ) throw "pathfind no such starting node "+startNodeId;
+		if( !nodeList[endNodeId] ) throw "pathfind no such end node "+endNodeId;
+
+		let count = 0;
+		function advance(nodeId,fromNodeId) {
+			if( !nodeList[nodeId] ) throw "pathfind no such node "+nodeId;
+			from[nodeId] = fromNodeId;
+			count += 1;
+			$.each(nodeList[nodeId].connectionList,function(index,toNodeId) {
+				if( !nodeList[toNodeId] ) throw "pathfind no such connection from "+nodeId+" to "+toNodeId;
+				let toNode = nodeList[toNodeId];
+				if( toNode.id != fromNodeId && from[toNode.id] === undefined ) {
+					advance(toNodeId,nodeId);
+				}
+			});
+		}
+		advance(startNodeId,-1);
+		let path = [];
+		let nodeId = endNodeId;
+		if( from[nodeId] === undefined ) {
+			return false;
+		}
+		do {
+			path.unshift(nodeId);
+			nodeId = from[nodeId];
+		} while( nodeId != startNodeId && nodeList[nodeId] && from[nodeId] !== undefined );
+		path.unshift(nodeId);
+		return path;
 	}
 }
 class Mission {
 	constructor(data){
 		this.name = data.name;
-		this.personList = data.personList;
-		this.nodeList = data.nodeList;
+		this.personList = $.extend(true,{},data.personList);
+		this.nodeList = $.extend(true,{},data.nodeList);
+		this.lookup = {
+			person: {},
+			node: {
+				entranceNodeId: this.nodeFindWhere('isEntrance',true).id,
+				commandNodeId: this.nodeFindWhere('isCommand',true).id
+			}
+		};
 	}
 	mapPopulate() {
-		game.map.renderList = [];
+		game.renderer.renderList = [];
 		$.each(this.personList,function(index,person) {
-			game.map.renderList.push(person);
+			game.renderer.renderList.push(person);
 		});
 		$.each(this.nodeList,function(index,node) {
-			game.map.renderList.push(node);
+			game.renderer.renderList.push(node);
 		});
 	}
-	nodeFind(idOrName) {
-		for( let i=0 ; i<this.nodeList.length ; ++i ) {
-			if( this.nodeList[i].id == idOrName || this.nodeList[i].name == idOrName ) {
-				return this.nodeList[i];
+	personFindWhere(member,value) {
+		var found = false;
+		$.each( this.personList, function(personId,person) {
+			if( person[member] == value ) {
+				found = person;
+				return false;
 			}
+		});
+		return found;
+	}
+	nodeFindWhere(member,value) {
+		var found = false;
+		$.each( this.nodeList, function(nodeId,node) {
+			if( node[member] == value ) {
+				found = node;
+				return false;
+			}
+		});
+		return found;
+	}
+	executeOrder(order) {
+		let person = this.personFindWhere('name',order.who);
+		let node = this.nodeFindWhere('id',order.where);
+		if( order.verb == 'search' || order.verb == 'evacuate') {
+			person.objective = order.verb;
+			person.destinationNodeId = node.id;
+			person.onOrder(order);
 		}
-		return null;
 	}
 	tick() {
-		for(let i = 0; i < this.personList.length; i++){
-			this.personList[i].tick();
-		}
+		$.each( this.personList, function(personId,person) {
+			person.tick();
+		});
 		$("#time").text(hrTime(game.time));
 	}
 }
+function giveIds(obj) {
+	$.each(obj,function(key,value) {
+		obj[key].id = key;
+	});
+	return obj;
+}
+
 let missionList = [
 	new Mission({
 		name: "proof of concept",
-		personList: [
-			new Person({
+		personList: giveIds({
+			'You': new Person({
+				name: "You",
+				isYou: true,
+				nodeId: 1,
+				isPatient: false,
+				objective: "command"
+			}),
+			'BA': new Person({
 				name: "Billabob Armadillo",
-				node: 1,
+				nodeId: 1,
 				isPatient: false,
 				objective: "wait"
 			}),
-			new Person({
+			'G': new Person({
+				name: "Greg",
+				nodeId: 1,
+				isPatient: false,
+				objective: "wait"
+			}),
+			'A': new Person({
+				name: "Allan",
+				nodeId: 1,
+				isPatient: false,
+				objective: "wait"
+			}),
+			'S': new Person({
 				name: "Smeerfly",
-				node: 3,
+				nodeId: 3,
 				isPatient: true,
 				injuryList: [{location: 'left ankle', type: 'sprain'}],
 				objective: "wait"
 			})
-		],
-		nodeList: [
-			new Node({
-				id: 1,
-				x: 100,
-				y: 100,
-				connectionList: [
-					2
-				]
-			}),
-			new Node({
-				id: 2,
-				x: 200,
+		}),
+		nodeList: giveIds({
+			'1': new Node({
+				name: "Incident Command",
+				isCommand: true,
+				x: 10,
 				y: 150,
 				connectionList: [
-					1, 3
-				]
-			}),
-			new Node({
-				id: 3,
-				x: 200,
-				y: 100,
-				connectionList: [
 					2
 				]
+			}),
+			'2': new Node({
+				name: "Entrance",
+				isEntrance: true,
+				x: 50,
+				y: 150,
+				connectionList: [
+					1, '2a'
+				]
+			}),
+			'2a': new Node({
+				name: "Entrance",
+				isEntrance: true,
+				x: 100,
+				y: 150,
+				connectionList: [
+					2, 3
+				]
+			}),
+			'3': new Node({
+				name: "Dry Room",
+				x: 150,
+				y: 100,
+				connectionList: [
+					'2a', 4
+				]
+			}),
+			'4': new Node({
+				name: "Wall of Faces",
+				x: 200,
+				y: 200,
+				connectionList: [
+					3
+				]
 			})
-		]
+		})
 	})
 ];
 $(document).ready(function() {
 	game = new Game({
 		mission: missionList[0]
 	});
+	game.tick();
 	let timer = setInterval(
 		function() { game.tick(); }, 1000
 	)
