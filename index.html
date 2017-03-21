@@ -236,8 +236,15 @@ class Node {
 	render(context) {
 		let e = this.extent(context);
 		context.beginPath();
-    	context.arc(context.xLoc(e.x),context.yLoc(e.y), 20, 0, Math.PI * 2, true);
+		context.strokeStyle="#000000";
+		let radius = 10;
+		let textHeight = 20;
+    	context.arc(context.xLoc(e.x),context.yLoc(e.y)-textHeight/2, radius, 0, Math.PI*2, true);
 		context.stroke();
+		context.fillStyle = "black";
+		context.font = "bold "+textHeight+"px Arial";
+		context.textAlign = "center";
+		context.fillText(this.id, context.xLoc(e.x), context.yLoc(e.y));
 	}
 }
 class Mission {
