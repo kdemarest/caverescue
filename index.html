@@ -1,0 +1,341 @@
+<script
+  src="https://code.jquery.com/jquery-3.1.1.js"
+  integrity="sha256-16cdPddA6VdVInumRGo6IbivbERE8p7CQR3HzTBuELA="
+  crossorigin="anonymous"></script>
+
+<style>
+#chat {
+	height: 300px;
+	border: 1px solid black;
+	overflow: hidden;
+}
+#orders {
+	height: 300px;
+	border: 1px solid black;
+	overflow: hidden;
+}
+#orderSummary {
+	background-color: lightblue;
+	border: 1px solid black;
+	overflow: hidden;
+}
+a.choice {
+	color: blue;
+	text-decoration: underline;
+	cursor: pointer;
+}
+a.choice:hover {
+	background-color: gray;
+	cursor: pointer;
+}
+#map {
+  background: #FF0;
+}
+
+</style>
+
+<script>
+let game = null;
+
+function hrTime(t) {
+	function lpad(n) {
+		return (n < 10 ? '0'+n : n);
+	}
+	return lpad(Math.floor(t/(60*60)))+':'+lpad(Math.floor(t/60))+':'+lpad(t % 60);
+}
+
+function query(a,fn) {
+	var result = [];
+	$.each(a,function(index,item) {
+		let n = fn(item);
+		if( n!==false ) { result.push(n); }
+	});
+	return result;
+}
+
+class Chat {
+	add(source,message) {
+		let s = "<p>" + hrTime(game.time) + ' ' + source + ': ' + message + "</p>";
+		$("#chat").prepend(s);
+	}
+}
+
+class Map {
+	constructor() {
+		this.canvas = document.getElementById("map");
+		this.context = this.canvas.getContext("2d");
+		this.renderList = [];
+	}
+	render() {
+		var ctx = this.context;
+		ctx.canvas.width = $("#mapCell").innerWidth()-2;
+		ctx.canvas.height = $("#mapCell").innerHeight()-2;
+		let xMin = 999999;
+		let xMax = -999999;
+		let yMin = 999999;
+		let yMax = -999999;
+		$.each(this.renderList,function(index,entity) {
+			var e = entity["extent"](ctx);
+			xMin = Math.min(xMin,e.x);
+			xMax = Math.max(xMax,e.x);
+			yMin = Math.min(yMin,e.y);
+			yMax = Math.max(yMax,e.y);
+		});
+		let xRatio = (xMax-xMin)/ctx.canvas.width;
+		let yRatio = (yMax-yMin)/ctx.canvas.height;
+		let xMargin = 0.1;	// normalized percentage
+		let yMargin = 0.1;	// normalized percentage
+		if( xRatio < yRatio ) {
+			//somehow change the margin value so that the smallest rules.
+		}
+		let xLen = xMax-xMin;
+		let yLen = yMax-yMin;
+		xMin -= xLen*xMargin;
+		xMax += xLen*xMargin;
+		yMin -= yLen*yMargin;
+		yMax += yLen*yMargin;
+
+		ctx.xLoc = function(x) {
+			let xPct = (x-xMin)/(xMax-xMin);
+			return xPct * ctx.canvas.width;
+		}
+		ctx.yLoc = function(y) {
+			let yPct = (y-yMin)/(yMax-yMin);
+			return yPct * ctx.canvas.height;
+		}
+
+		$.each(this.renderList,function(index,entity) {
+			entity["render"](ctx);
+		});
+	}
+	tick() {
+		this.render();
+	}
+
+}
+
+class Orders {
+	constructor() {
+		this.order = [];
+		this.state = 0;	// 0 means populate, 1/2/3 = stages, 4 means execute
+		this.choices = {};
+	}
+	populate() {
+		this.choices.personList = query(game.mission.personList,function(person) {
+			return (!person.isPatient ? person.name : false);
+		});
+		this.choices.verb = ['go to'];
+		this.choices.landmark = query(game.mission.nodeList,function(node) {
+			return node.id;
+		});
+	}
+	present(column,choices) {
+		var colId = '#order_choices';
+		$(colId).empty();
+		$.each(choices,function(index,choice) {
+			$("<a src='javascript:void 0' class='choice'>"+choice+"</a>")
+				.appendTo(colId)
+				.click( function() {
+					game.orders.order.push(choice);					
+					game.orders.stateAdvance();
+				})
+				.append("<br />");
+		});
+	}
+	stateAdvance() {
+		this.populate();
+		this.state += 1;
+		if( this.state >= 4 ) { return; }
+		let choiceArrayList = [this.choices.personList, this.choices.verb, this.choices.landmark];
+		this.present(this.state,choiceArrayList[this.state-1]);
+		this.summarize();
+	}
+	summarize() {
+		$('#orderSummary').html("To "+this.order.join(' ')+"");
+	}
+	tick() {
+		if( this.state == 0 ) {
+			this.stateAdvance();
+		}
+		this.summarize();
+	}
+}
+
+class Game {
+	constructor(data){
+		this.mission = data.mission;
+		this.time = 0;
+		this.timeSpeed = 1.0;
+		this.chat = new Chat();
+		this.orders = new Orders();
+		this.map = new Map();
+	}
+	tick() {
+		this.time++;
+		this.mission.mapPopulate();
+		this.orders.tick();
+		this.map.tick();
+		this.mission.tick();
+	}
+}
+
+class Person {
+	constructor(data) {
+		this.name = data.name;
+		this.node = data.node;
+		this.isPatient = data.isPatient;
+		this.injuryList = data.injuryList;
+		this.action = data.action;
+		this.objective = data.objective;
+		this.chatBuffer = [];
+		this.chatBuffer.push(this.textStatus());
+	}
+	extent(context) {
+		let x = game.mission.nodeFind(this.node).x;
+		let y = game.mission.nodeFind(this.node).y;
+		return { x:x, y:y };
+	}
+	render(context) {
+		context.fillStyle = "blue";
+		context.font = "bold 16px Arial";
+		var e = this.extent(context);
+		context.fillText(this.name[0], context.xLoc(e.x), context.yLoc(e.y));
+	}
+	textStatus() {
+		let s = [];
+		s.push( "This is "+this.name+" at node "+this.node+"." );
+		if( this.injuryList ) { s.push( "I have a "+this.injuryList[0].type+' to my '+this.injuryList[0].location+'.'); }
+		s.push( "My objective is "+this.objective+".");
+		return s.join(' ');
+	}
+	chat(message) {
+		game.chat.add( this.name, message );
+	}
+	tick() {
+		while( this.chatBuffer.length > 0 ) {
+			let message = this.chatBuffer.shift();
+			if( typeof(message) == 'function' ) {
+				message = message(this);
+			}
+			this.chat(message);
+		}
+	}
+}
+
+class Node {
+	constructor(data) {
+		this.id = data.id;
+		this.name = data.name;
+		this.x = data.x;
+		this.y = data.y;
+		this.connectionList = data.connectionList;
+	}
+	extent(context) {
+		return { x: this.x, y: this.y };
+	}
+	render(context) {
+		let e = this.extent(context);
+		context.beginPath();
+    	context.arc(context.xLoc(e.x),context.yLoc(e.y), 20, 0, Math.PI * 2, true);
+		context.stroke();
+	}
+}
+class Mission {
+	constructor(data){
+		this.name = data.name;
+		this.personList = data.personList;
+		this.nodeList = data.nodeList;
+	}
+	mapPopulate() {
+		game.map.renderList = [];
+		$.each(this.personList,function(index,person) {
+			game.map.renderList.push(person);
+		});
+		$.each(this.nodeList,function(index,node) {
+			game.map.renderList.push(node);
+		});
+	}
+	nodeFind(idOrName) {
+		for( let i=0 ; i<this.nodeList.length ; ++i ) {
+			if( this.nodeList[i].id == idOrName || this.nodeList[i].name == idOrName ) {
+				return this.nodeList[i];
+			}
+		}
+		return null;
+	}
+	tick() {
+		for(let i = 0; i < this.personList.length; i++){
+			this.personList[i].tick();
+		}
+		$("#time").text(hrTime(game.time));
+	}
+}
+let missionList = [
+	new Mission({
+		name: "proof of concept",
+		personList: [
+			new Person({
+				name: "Billabob Armadillo",
+				node: 1,
+				isPatient: false,
+				objective: "wait"
+			}),
+			new Person({
+				name: "Smeerfly",
+				node: 3,
+				isPatient: true,
+				injuryList: [{location: 'left ankle', type: 'sprain'}],
+				objective: "wait"
+			})
+		],
+		nodeList: [
+			new Node({
+				id: 1,
+				x: 100,
+				y: 100,
+				connectionList: [
+					2
+				]
+			}),
+			new Node({
+				id: 2,
+				x: 200,
+				y: 150,
+				connectionList: [
+					1, 3
+				]
+			}),
+			new Node({
+				id: 3,
+				x: 200,
+				y: 100,
+				connectionList: [
+					2
+				]
+			})
+		]
+	})
+];
+$(document).ready(function() {
+	game = new Game({
+		mission: missionList[0]
+	});
+	let timer = setInterval(
+		function() { game.tick(); }, 1000
+	)
+});
+</script>
+
+<div id="time">  </div>
+<table style="width: 100%">
+<tr><td id='mapCell' style="width: 60%">
+	<canvas id="map" width="200" height="120"></canvas>
+</td>
+<td style="width: 40%">
+<div id="chat">  </div>
+</td>
+</tr></table>
+<div id="orders">
+<div id="orderSummary"></div>
+<div id="order_choices"></div>
+</div>
