@@ -2,23 +2,31 @@
 // Open me at file:///C:/cygwin64/home/kdemarest/caverescue/index.html
 </script>
 <script
-  src="https://code.jquery.com/jquery-3.1.1.js"
-  integrity="sha256-16cdPddA6VdVInumRGo6IbivbERE8p7CQR3HzTBuELA="
-  crossorigin="anonymous"></script>
+	src="https://code.jquery.com/jquery-3.1.1.js"
+	integrity="sha256-16cdPddA6VdVInumRGo6IbivbERE8p7CQR3HzTBuELA="
+	crossorigin="anonymous"></script>
+<script src="http://code.responsivevoice.org/responsivevoice.js"></script>
 
 <style>
 #chat {
-	height: 300px;
+	height: 200px;
+	font-size:12px;
 	border: 1px solid black;
 	overflow: hidden;
 }
+#chat p {
+	margin-top:0em;
+	margin-bottom:0em;
+}
 #orders {
-	height: 300px;
+	height: 200px;
+	font-size:12px;
 	border: 1px solid black;
 	overflow: hidden;
 }
 #orderSummary {
 	background-color: lightblue;
+	font-size:10px;
 	border: 1px solid black;
 	overflow: hidden;
 }
@@ -31,8 +39,11 @@ a.choice:hover {
 	background-color: gray;
 	cursor: pointer;
 }
+#mapCell {
+	border: 1px solid black;
+}
 #map {
-  background: #FF0;
+	background: #FF0;
 }
 
 </style>
@@ -65,7 +76,17 @@ function query(a,fn) {
 }
 
 class Chat {
+	constructor() {
+		this.lastSpeaker = '';
+	}
 	add(source,message) {
+		var person = game.mission.personFindWhere('name',source);
+		responsiveVoice.speak(
+			(this.lastSpeaker !== source && source !== 'You' ? "This is "+source+". " : '')+message,
+			"UK English Male",
+			person?{pitch:person.pitch}:undefined
+		);
+		this.lastSpeaker = source;
 		let s = "<p style='background-color:red;'>" + hrTime(game.time) + ' ' + source + ': ' + message + "</p>";
 		$(s)
 		.prependTo("#chat")
@@ -95,6 +116,7 @@ function Renderer(c) {
 	let yCtr;
 	let xScale;
 	let yScale;
+	let zoom = {xOfs: 0, yOfs: 0, scale: 1.0};
 	this.renderList = [];
 	let nodeArrange = {};
 
@@ -109,6 +131,8 @@ function Renderer(c) {
 			xMax = Math.max(xMax,e.x);
 			yMin = Math.min(yMin,e.y);
 			yMax = Math.max(yMax,e.y);
+			if( e.ex ) { xMin = Math.min(xMin,e.ex); xMax = Math.max(xMax,e.ex); }
+			if( e.ey ) { yMin = Math.min(yMin,e.ey); yMax = Math.max(yMax,e.ey); }
 		});
 		xLen = xMax-xMin;
 		yLen = yMax-yMin;
@@ -140,28 +164,34 @@ function Renderer(c) {
 			xLen: xLen, yLen: yLen,
 			xMargin: xMargin, yMargin: yMargin
 		}
-
+		this.scale = function() { return xScale; }
 		c.xLoc = function(x) {
-			let xPct = (x-xMin)/(xMax-xMin);
-			return xPct * c.canvas.width;
+			return (x-zoom.xOfs)/xScale*zoom.scale;
+			//let xPct = (x-xMin)/(xMax-xMin);
+			//return xPct / xScale;
 		}
 		c.yLoc = function(y) {
-			let yPct = (y-yMin)/(yMax-yMin);
-			return yPct * c.canvas.height;
+			return (y-zoom.yOfs)/yScale*zoom.scale;
+			//let yPct = (y-yMin)/(yMax-yMin);
+			//return yPct / yScale;
 		}
+	}
+	this.renderSurvey = function(survey) {
+		let e = survey.extent(c);
+		c.drawImage(survey.image,c.xLoc(0),c.yLoc(0),c.xLoc(e.ex),c.yLoc(e.ey));
 	}
 	this.renderNode = function(node) {
 		let e = node.extent(c);
 		let radius = 10;
-		let textHeight = 20;
+		let textHeight = 14;
 		c.beginPath();
 		c.strokeStyle="#000000";
-		c.arc(c.xLoc(e.x),c.yLoc(e.y)-textHeight/2.5, radius, 0, Math.PI*2, true);
+		c.arc(c.xLoc(e.x),c.yLoc(e.y), radius, 0, Math.PI*2, true);
 		c.stroke();
 		c.fillStyle = "black";
 		c.font = "bold "+textHeight+"px Arial";
 		c.textAlign = "center";
-		c.fillText(node.id, c.xLoc(e.x), c.yLoc(e.y));
+		c.fillText(node.id, c.xLoc(e.x), c.yLoc(e.y)+textHeight/2);
 	}
 	this.renderPerson = function(person) {
 		var nodeId = person.nodeId;
@@ -175,7 +205,7 @@ function Renderer(c) {
 		let yOfs = Math.sin(nodeArrange[nodeId]/8*Math.PI*2);
 		var e = person.extent(c);
 		let textHeight = 14;
-		c.fillStyle = "blue";
+		c.fillStyle = person.isPatient ? "red" : "blue";
 		c.font = "bold "+textHeight+"px Arial";
 		c.textAlign = "center";
 		c.fillText(person.name[0], c.xLoc(e.x)+xOfs*textHeight, c.yLoc(e.y)+yOfs*textHeight);
@@ -191,10 +221,53 @@ function Renderer(c) {
 	return this;
 }
 
+class Survey {
+	constructor(survey,onLoad) {
+		this.image = new Image();
+		this.image.src = survey.url;
+		this.dimensions = { x:0, y:0, ex:100, ey:100 };
+		let self = this;
+		this.image.onload = function() {
+			self.dimensions = { x:0, y:0, ex:this.width, ey:this.height };
+			self.loaded = true;
+			onLoad(this.width,this.height);
+		};
+	}
+	extent() {
+		return this.dimensions;
+	}
+	render() {
+		game.renderer.renderSurvey(this);
+	}
+
+}
+
 class Map {
 	constructor() {
 		this.canvas = document.getElementById("map");
 		this.context = this.canvas.getContext("2d");
+		var self = this;
+		function getMousePos(canvas, evt) {
+			var rect = self.canvas.getBoundingClientRect();
+			var w = Math.min((rect.right-rect.left),game.survey.image.width/game.renderer.scale());
+			var h = Math.min((rect.bottom-rect.top),game.survey.image.height/game.renderer.scale());
+			return {
+				x: Math.floor((evt.clientX - rect.left)/w*1000),
+				y: Math.floor((evt.clientY - rect.top)/h*1000)
+			};
+		}
+		this.canvas.addEventListener('mousemove', function(evt) {
+			var mousePos = getMousePos(self.canvas, evt);
+			$('#coords').html('('+mousePos.x+','+mousePos.y+')');
+			let radius = 2;
+			self.context.beginPath();
+			self.context.strokeStyle="#ff0000";
+			var w = game.survey.image.width;
+			var h = game.survey.image.height;
+			self.context.arc(self.context.xLoc(mousePos.x*w/1000),self.context.yLoc(mousePos.y*h/1000), radius, 0, Math.PI*2, true);
+			self.context.stroke();
+
+		}, false);	
 	}
 	render() {
 		this.context.canvas.width = $("#mapCell").innerWidth()-2;
@@ -285,6 +358,12 @@ class Game {
 		this.pathFinder = new PathFinder(this.mission.nodeList);
 		this.chat = new Chat();
 		this.orders = new Orders();
+		this.survey = new Survey(
+			data.mission.survey,
+			function(w,h) {
+				data.mission.nodesCorrect(w,h);
+			}
+		);
 		this.map = new Map();
 		this.renderer = new Renderer(this.map.context);
 	}
@@ -307,7 +386,7 @@ class Person {
 		this.objective = data.objective;
 		this.destinationNodeId = null;
 		this.chatBuffer = [];
-		this.chatBuffer.push(this.textStatus());
+		//this.chatBuffer.push(this.textStatus());
 	}
 	extent() {
 		let x = game.mission.nodeFindWhere('id',this.nodeId).x;
@@ -331,11 +410,16 @@ class Person {
 		var self = this;
 		if( order.verb == 'evacuate' ) {
 			self.evacuatingPersonId = undefined;
+			this.chatBuffer.push("Evacuating now.");
+		}
+		if( order.verb == 'search' ) {
+			this.chatBuffer.push("I will search to "+game.mission.nodeFindWhere('id',order.where).name+".");
 		}
 	}
 	onFindPatient(patientsFound) {
 		let id = this.id;
-		this.chatBuffer.push("I found patient"+(patientsFound.length>1?'s':'')+' '+patientsFound.joinMember('name',', ')+'!');
+		let node = game.mission.nodeFindWhere('id',this.nodeId);
+		this.chatBuffer.push("I found patient"+(patientsFound.length>1?'s':'')+' '+patientsFound.joinMember('name',', ')+(node&&node.name?' in '+node.name:'')+'!');
 		$.each( patientsFound, function(index,person) {
 			person.foundByPersonId = id;
 		});
@@ -472,6 +556,7 @@ class PathFinder {
 class Mission {
 	constructor(data){
 		this.name = data.name;
+		this.survey = data.survey;
 		this.personList = $.extend(true,{},data.personList);
 		this.nodeList = $.extend(true,{},data.nodeList);
 		this.lookup = {
@@ -481,15 +566,22 @@ class Mission {
 				commandNodeId: this.nodeFindWhere('isCommand',true).id
 			}
 		};
+
+		$.each(this.personList,function(index,person) {
+			person.pitch = 0.5+Math.random()*1.0;
+		});
 	}
 	mapPopulate() {
 		game.renderer.renderList = [];
-		$.each(this.personList,function(index,person) {
-			game.renderer.renderList.push(person);
-		});
-		$.each(this.nodeList,function(index,node) {
-			game.renderer.renderList.push(node);
-		});
+		if( game.survey.loaded ) {
+			game.renderer.renderList.push(game.survey);
+			$.each(this.personList,function(index,person) {
+				game.renderer.renderList.push(person);
+			});
+			$.each(this.nodeList,function(index,node) {
+				game.renderer.renderList.push(node);
+			});
+		}
 	}
 	personFindWhere(member,value) {
 		var found = false;
@@ -510,6 +602,15 @@ class Mission {
 			}
 		});
 		return found;
+	}
+	nodesCorrect(surveyWidth,surveyHeight) {
+		if( !this.corrected ) {
+			$.each( this.nodeList, function(nodeId,node) {
+				node.x = node.x * surveyWidth / 1000.0;
+				node.y = node.y * surveyHeight / 1000.0;
+			});
+			this.corrected = true;
+		}
 	}
 	executeOrder(order) {
 		let person = this.personFindWhere('name',order.who);
@@ -534,12 +635,18 @@ function giveIds(obj) {
 	return obj;
 }
 
-let missionList = [
+function getMissionList() {
+	return [
 	new Mission({
 		name: "proof of concept",
+		survey: {
+			//url: "WhirlpoolCave.png"
+			url: "WhirlpoolCave40PctCropped.png"
+		},
 		personList: giveIds({
 			'You': new Person({
 				name: "You",
+				gender: 'm',
 				isYou: true,
 				nodeId: 1,
 				isPatient: false,
@@ -547,24 +654,28 @@ let missionList = [
 			}),
 			'BA': new Person({
 				name: "Billabob Armadillo",
+				gender: 'm',
 				nodeId: 1,
 				isPatient: false,
 				objective: "wait"
 			}),
 			'G': new Person({
 				name: "Greg",
+				gender: 'm',
 				nodeId: 1,
 				isPatient: false,
 				objective: "wait"
 			}),
 			'A': new Person({
 				name: "Allan",
+				gender: 'm',
 				nodeId: 1,
 				isPatient: false,
 				objective: "wait"
 			}),
 			'S': new Person({
 				name: "Smeerfly",
+				gender: 'm',
 				nodeId: 3,
 				isPatient: true,
 				injuryList: [{location: 'left ankle', type: 'sprain'}],
@@ -575,52 +686,81 @@ let missionList = [
 			'1': new Node({
 				name: "Incident Command",
 				isCommand: true,
-				x: 10,
-				y: 150,
+				x: 250,
+				y: 880,
 				connectionList: [
-					2
+					'en'
 				]
 			}),
-			'2': new Node({
+			'en': new Node({
 				name: "Entrance",
 				isEntrance: true,
-				x: 50,
-				y: 150,
+				x: 67,
+				y: 925,
 				connectionList: [
-					1, '2a'
+					1, 'nb'
 				]
 			}),
-			'2a': new Node({
-				name: "Entrance",
-				isEntrance: true,
-				x: 100,
-				y: 150,
+			'nb': new Node({
+				name: "Natural Bridge",
+				x: 111,
+				y: 839,
 				connectionList: [
-					2, 3
+					'en', '2b'
+				]
+			}),
+			'2b': new Node({
+				x: 188,
+				y: 667,
+				connectionList: [
+					'nb', '2c'
+				]
+			}),
+			'2c': new Node({
+				x: 254,
+				y: 613,
+				connectionList: [
+					'2b', '2d'
+				]
+			}),
+			'2d': new Node({
+				x: 293,
+				y: 594,
+				connectionList: [
+					'2c', '2e'
+				]
+			}),
+			'2e': new Node({
+				x: 352,
+				y: 643,
+				connectionList: [
+					'2d', '3'
 				]
 			}),
 			'3': new Node({
-				name: "Dry Room",
-				x: 150,
-				y: 100,
+				name: "Travis Country Room",
+				x: 424,
+				y: 570,
 				connectionList: [
-					'2a', 4
+					'2e', 'rr'
 				]
 			}),
-			'4': new Node({
-				name: "Wall of Faces",
-				x: 200,
-				y: 200,
+			'rr': new Node({
+				name: "Red Room",
+				x: 380,
+				y: 388,
 				connectionList: [
 					3
 				]
 			})
 		})
 	})
-];
+	];
+}
+
 $(document).ready(function() {
 	game = new Game({
-		mission: missionList[0]
+		mission: getMissionList()[0]
 	});
 	game.tick();
 	let timer = setInterval(
@@ -629,16 +769,26 @@ $(document).ready(function() {
 });
 </script>
 
-<div id="time">  </div>
+<div><span id="time"></span>&nbsp;&nbsp;<span id="coords"></span></div>
 <table style="width: 100%">
-<tr><td id='mapCell' style="width: 60%">
+<tr>
+<td rowspan=3>
+	<div id='mapCell' style="width:100%; height:500px;">
 	<canvas id="map" width="200" height="120"></canvas>
+	</div>
 </td>
 <td style="width: 40%">
-<div id="chat">  </div>
+<div id="whiteboard">WHITEBOARD</div>
 </td>
-</tr></table>
+</tr><tr>
+<td style="width: 40%">
+<div id="chat">	</div>
+</td>
+</tr><tr>
+<td style="width: 40%">
 <div id="orders">
 <div id="orderSummary"></div>
 <div id="order_choices"></div>
 </div>
+</td>
+</tr></table>
