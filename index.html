@@ -29,9 +29,15 @@
 }
 #orderSummary {
 	background-color: lightblue;
-	font-size:10px;
-	border: 1px solid black;
+	font-size:12px;
+	border: 0px solid black;
+	height: 14px;
 	overflow: hidden;
+}
+#orderChoices {
+	font-size:10px;
+	overflow-y: scroll;
+	height: calc( 100% - 14px );
 }
 a.choice {
 	color: blue;
@@ -41,6 +47,9 @@ a.choice {
 a.choice:hover {
 	background-color: gray;
 	cursor: pointer;
+}
+span.disableChoice {
+	color: grey;
 }
 #mapCell {
 	border: 1px solid black;
@@ -71,16 +80,103 @@ function query(a,fn) {
 	return result;
 }
 
-function getDistance(entity1,entity2) {
+function getMapDistance(entity1,entity2) {
 	let dx = (entity1.x-entity2.x)/game.mission.survey.mapScale;
 	let dy = (entity1.y-entity2.y)/game.mission.survey.mapScale;
 	return Math.sqrt((dx*dx)+(dy*dy));
 }
-
+function getDistance(entity1,entity2) {
+	let dx = entity1.x-entity2.x;
+	let dy = entity1.y-entity2.y;
+	return Math.sqrt((dx*dx)+(dy*dy));
+}
+function getRadians(source,target) {
+	let dx = target.x - source.x;
+	let dy = target.y - source.y;
+	return Math.atan2(dy,dx);
+}
 var debug = {
 	showNodes: false,
-	showPatient: false
+	showPatient: false,
+	log: function(message) { console.log(message); }
 };
+
+var Effort = {
+	walk: 1.0,
+	talk: 0.1
+}
+
+let MoveMode = giveIds({
+	squeeze: { speed: 0.10, effortPerSecond: 3.0, pass: false },
+	crawl: { speed: 0.25, effortPerSecond: 1.5, pass: true },
+	stoop: { speed: 0.50, effortPerSecond: 1.2, pass: true },
+	walk: { speed: 1.00, effortPerSecond: 1.0, pass: true },
+	vertical: { speed: 0.10, effortPerSecond: 3.0, pass: false },
+	crack: { speed: 0.50, effortPerSecond: 1.5, pass: false },
+	splash: { speed: 0.90, effortPerSecond: 1.0, pass: true },
+	wade: { speed: 0.70, effortPerSecond: 1.1, pass: true },
+	swim: { speed: 0.30, effortPerSecond: 1.4, pass: true },
+	lowair: { speed: 0.15, effortPerSecond: 1.0, pass: false }
+});
+
+var BodyLimits = {
+	staminaNormal: 1.0,
+	staminaTired: 0.25,
+	staminaExhausted: 0.05,
+	temperatureNormal: 98.6,
+	temperatureHypothermia: 95
+};
+
+var BodyLevels = {
+	staminaTired: 0.18,
+	staminaExhausted: 0.02,
+	temperatureHypothermia: 93,
+	temperatureHypothermiaSevere: 82
+};
+
+let IssueType = giveIds({
+	lost: {
+		speed: 1.0,
+		effort: 1.0,
+		test: function() { return this.isLost; },
+		describe: function() {
+			return "is lost";
+		}
+	},
+	exhausted: {
+		speed: 0.5,
+		effort: 2.0,
+		test: function() { return this.body.stamina <= BodyLimits.staminaExhausted; },
+		describe: function() {
+			return "is exhausted";
+		}
+	},
+	tired: {
+		speed: 0.5,
+		effort: 1.0,
+		test: function() { return this.body.stamina <= BodyLimits.staminaTired && this.body.stamina > BodyLimits.staminaExhausted; },
+		describe: function() {
+			return "is tired";
+		}
+	},
+	hypothermic: {
+		speed: 0.7,
+		effort: 2.0,
+		test: function() { return this.body.temperature <= BodyLimits.temperatureHypothermia; },
+		describe: function() {
+			return "is hypothermic";
+		}
+	}
+});
+
+let InjurySeverity = giveIds({
+	canWalk: { speed: 1.0, effort: 1.0 },
+	canWalkPainfully: { speed: 0.5, effort: 2.0 },
+	canDragSelf: { speed: 0.2, effort: 4.0 },
+	mustBeHelped: { speed: 0.5, effort: 3.0 },
+	requiresStretcher: { speed: 0.0, effort: 0.0 },
+	requiresStretcherAndSpine: { speed: 0.0, effort: 0.0 }
+});
 
 class Chat {
 	constructor(peopleFind) {
@@ -194,18 +290,95 @@ function Renderer() {
 			//return yPct / yScale;
 		}
 	}
+	this.textHeightStandard = function(size) {
+		return Math.floor(Math.min(16,Math.max(6,c.scaleLength(size*2))));
+	}
+	this.visualPlacement = function(renderList) {
+		let tolerance = this.textHeightStandard(12)*1.5;
+		let p = [];
+		$.each(renderList,function(index,entity) {
+			if( !(entity instanceof Person) ) {
+				return;
+			}
+			if( entity.visual.x === false ) {
+				entity.visual.x = entity.x;
+			}
+			if( entity.visual.y === false ) {
+				entity.visual.y = entity.y;
+			}
+			p.push(entity);
+		});
+
+		p.sort(function(a,b) {
+			if( a.lastMoveTime == b.lastMoveTime ) {
+				return a.id < b.id ? 1 : -1;
+			}
+			return a.lastMoveTime < b.lastMoveTime ? 1 : -1;
+		});
+
+		let overlap;
+		let timeout = 1;
+		do {
+			overlap = false;
+			for( let i=0 ; i<p.length ; ++i ) {
+				let xOld = p[i].visual.x;
+				let yOld = p[i].visual.y;
+				let d = getDistance(p[i].visual,p[i]);
+				let triedToward = false;
+				if( d > 0.01 ) {
+					let r = getRadians(p[i].visual,p[i]);
+					let travel = p[i].isActivelyMoving() ? Math.max((d-tolerance)*0.8,1.0) : Math.min(d,1.0);
+					p[i].visual.x += Math.cos(r)*travel;
+					p[i].visual.y += Math.sin(r)*travel;
+					triedToward = true;
+				}
+				// Now move away from any overlaps.
+				if( !p[i].isActivelyMoving() ) {
+					for( let j=i+1 ; j<p.length ; ++j ) {
+						if( p[j].isActivelyMoving() ) {
+							continue;
+						}
+						let d = getDistance(p[i].visual,p[j].visual);
+						if( d < tolerance && triedToward ) {
+							// We tried to go toward our approved spot, but that caused an overlap
+							// so we'll reset to where we started and hope that isn't an overlap.
+							triedToward = false;
+							p[i].visual.x = xOld;
+							p[i].visual.y = yOld;
+							d = getDistance(p[i].visual,p[j].visual);
+						}
+
+						if( d == 0 ) {
+							p[i].visual.x -= Math.cos(p[i].visual.rand)*0.01;
+							p[i].visual.y -= Math.sin(p[i].visual.rand)*0.01;
+							d = getDistance(p[i].visual,p[j].visual);
+						}
+						if( d < tolerance ) {
+							overlap = true;
+							let r = getRadians(p[i].visual,p[j].visual);
+							p[i].visual.x -= Math.cos(r)*2.0;
+							p[i].visual.y -= Math.sin(r)*2.0;
+							let d2 = getDistance(p[i].visual,p[j].visual);
+						}
+					}
+				}
+			}
+		} while( overlap && --timeout>0 );
+	}
 	this.renderSurvey = function(survey) {
 		let e = survey.extent(c);
 		c.drawImage(survey.image,c.xLoc(0),c.yLoc(0),c.xLoc(e.ex),c.yLoc(e.ey));
 	}
 	this.renderNode = function(node) {
 		let e = node.extent(c);
-		let textHeight = Math.floor(Math.min(16,Math.max(6,c.scaleLength(12*2))));
+		let textHeight = this.textHeightStandard(12);
 		let radius = Math.floor(textHeight/2+2);
 		c.beginPath();
-		c.strokeStyle="#000000";
 		c.arc(c.xLoc(e.x),c.yLoc(e.y), radius, 0, Math.PI*2, true);
-		c.stroke();
+		//c.strokeStyle="#000000";
+		//c.stroke();
+		c.fillStyle = 'rgba(255, 255, 255, 0.6)';
+		c.fill();		
 		c.fillStyle = "black";
 		c.font = "bold "+textHeight+"px Arial";
 		c.textAlign = "center";
@@ -221,16 +394,25 @@ function Renderer() {
 		}
 		let xOfs = 0; //Math.cos(nodeArrange[nodeId]/8*Math.PI*2);
 		let yOfs = 0; //Math.sin(nodeArrange[nodeId]/8*Math.PI*2);
-		var e = person.extent(c);
-		let textHeight = Math.floor(Math.min(16,Math.max(6,c.scaleLength(12*2))));
-		c.fillStyle = person.isPatient ? "red" : "blue";
+		var e = person.visual;
+		let textHeight = this.textHeightStandard(12);
+		let radius = Math.floor(textHeight/2);
+
+		c.beginPath();
+		c.arc(c.xLoc(e.x),c.yLoc(e.y), radius, 0, Math.PI*2, true);
+//		c.strokeStyle="#000000";
+//		c.stroke();
+		c.fillStyle = 'rgba(255, 255, 255, 0.8)';
+		c.fill();		
+		c.fillStyle = person.isPatient ? "red" : person.isAwaitingTraffic ? "gold" : "blue";
 		c.font = "bold "+textHeight+"px Arial";
 		c.textAlign = "center";
-		c.fillText(person.name[0], c.xLoc(e.x)+xOfs*textHeight, c.yLoc(e.y)+yOfs*textHeight);
+		c.fillText(person.name[0], c.xLoc(e.x)+xOfs*textHeight, c.yLoc(e.y)+textHeight/2.5+yOfs*textHeight);
 	}
 	this.render = function(renderList) {
 		nodeArrange = {};
 		this.dimensionsCalc(renderList);
+		this.visualPlacement(renderList);
 		$.each(renderList,function(index,entity) {
 			entity["render"](c);
 		});
@@ -262,7 +444,7 @@ class Map {
 	constructor() {
 		this.canvas = document.getElementById("map");
 		this.context = this.canvas.getContext("2d");
-		var self = this;
+		let self = this;
 		function getMousePos(canvas, evt) {
 			var rect = self.canvas.getBoundingClientRect();
 			var w = Math.min((rect.right-rect.left),game.survey.image.width/game.renderer.scale());
@@ -342,13 +524,23 @@ class Person {
 		this.land = null;
 		this.x = false;	// position is unknown until we have a node list
 		this.y = false;
+		this.lastMoveTime = 0.0;
 		this.isYou = data.isYou;
 		this.isPatient = data.isPatient;
-		this.stamina = 1.0;
-		this.injuryList = data.injuryList || [];
+		this.isLost = data.isLost;
+		this.toAssess = null;
+		let b = data.body || {};
+		this.body = {
+			stamina: b.stamina || BodyLimits.staminaNormal,
+			temperature: b.temperature || BodyLimits.temperatureNormal,
+			injuryList: b.injuryList || []
+		};
 		this.action = data.action;
+		this.orderList = [];
 		this.objective = data.objective;
-		this.destinationNodeId = null;
+		this.destinationNodeId = false;
+		this.destinationNextNodeId = false;
+		this.nextNode = false;
 		this.chatBuffer = [];
 		this.actionList = [];
 		//this.chatBuffer.push(this.textStatus());
@@ -366,25 +558,119 @@ class Person {
 	textStatus() {
 		let s = [];
 		s.push( "This is "+this.name+" at node "+this.nodeId+"." );
-		if( this.injuryList ) { s.push( "I have a "+this.injuryList[0].type+' to my '+this.injuryList[0].location+'.'); }
+//		if( this.body.injuryList ) { s.push( "I have a "+this.body.injuryList[0].desc+' to my '+this.body.injuryList[0].location+'.'); }
 		s.push( "My objective is "+this.objective+(this.destinationNodeId?' '+this.destinationNodeId:'')+".");
 		return s.join(' ');
 	}
 	chat(message) {
 		game.chat.add( this, message );
 	}
+	evacuatingPersonCouple(person) {
+		this.evacuatingPersonDecouple();
+		debug.log(this.name+' setting evac person');
+		this.evacuatingPerson = person;
+		person.objective = 'evacuate';
+		person.destinationSet(this.destinationNodeId);
+	}
+	evacuatingPersonDecouple() {
+		if( this.evacuatingPerson ) {
+			debug.log(this.name+' clearing evac person');
+			this.actionClear('evacuate');
+			this.evacuatingPerson.objective = 'wait';
+			this.evacuatingPerson.destinationClear();
+			this.evacuatingPerson = undefined;
+		}
+	}
+	destinationSet(nodeId) {
+		if( this.nextNode && !this.isAwaitingTraffic ) {
+			this.actionClear('move');
+			this.destinationNextNodeId = nodeId;
+			this.nextNode = false;
+			return;
+		}
+		if( nodeId != this.destinationNodeId ) {
+			this.actionClear('move');
+			this.destinationNextNodeId = false;
+			this.destinationNodeId = nodeId;
+			this.nextNode = false;
+		}
+	}
+	destinationClear(nodeId) {
+		if( this.nextNode ) {
+			this.destinationNodeId = this.nextNode.id;
+			this.destinationNextNodeId = false;
+			return;
+		}
+		this.actionClear('move');
+		this.destinationNodeId = false;
+		this.destinationNextNodeId = false;
+		this.nextNode = false;
+	}
+	actionClear(actionId) {
+		if( this.actionList[0] && this.actionList[0].id == actionId ) {
+			var abort = this.actionList.shift();
+			debug.log(this.name+' aborting '+actionId);
+			abort.onAbort.apply(this,[abort]);
+		}
+	}
+	isMoving() {
+		return this.actionList.length && this.actionList[0].id=='move';
+	}
+	isActivelyMoving() {
+		return this.isMoving() && !this.isAwaitingTraffic;
+	}
+	orderAdd(order) {
+		// WARNING: we will need to put in some smarts so that certain pre-existing
+		// orders get zapped when certain orders come in. For example, evac, search and return
+		// are all mutually-exclusive.
+		this.orderList.push($.extend(true,{},order));
+	}
 	onOrder(order) {
-		var self = this;
+		this.evacuatingPersonDecouple();
+		if( order.verb == 'form' ) {
+			this.people.teamForm('team '+order.person.name,order.node,order.roster);
+		}
 		if( order.verb == 'evacuate' ) {
-			self.evacuatingPerson = undefined;
+			this.objective = order.verb;
+			order.node = game.mission.lookup.node.command;
+			this.destinationSet(order.node.id);
 			this.chatBuffer.push("Evacuating now.");
 		}
 		if( order.verb == 'search' ) {
-			this.chatBuffer.push("I will search to "+order.node.name+".");
+			this.objective = order.verb;
+			this.destinationSet(order.node.id);
+			this.chatBuffer.push("I will search to "+(order.node.name||order.node.nameTemporary)+".");
 		}
+		if( order.verb == 'return' ) {
+			this.objective = order.verb;
+			this.destinationSet(game.mission.lookup.node.command.id);
+			this.chatBuffer.push("Returning.");
+		}
+		if( order.verb == 'assess' ) {
+			this.objective = order.verb;
+			this.toAssess = order.patient;
+			this.chatBuffer.push("I will assess "+order.patient.name+".");
+		}
+	}
+	canSee(person) {
+		return this.nodeId == person.nodeId;
 	}
 	myNode() {
 		return this.land.find(this.nodeId);
+	}
+	myPlace() {
+		if( !this.nextNode ) {
+			return this.nodeId;
+		}
+		let node = this.myNode();
+		return node.id<this.nextNode.id ? node.id+'-'+this.nextNode.id : this.nextNode.id+'-'+node.id;
+	}
+	myTraffic(reversed) {
+		if( !this.nextNode ) {
+			return '';
+		}
+		let node = this.myNode();
+		return reversed ? this.nextNode.id+'->'+node.id : node.id+'->'+this.nextNode.id;
 	}
 	onFindPatient(patientsFound) {
 		let id = this.id;
@@ -398,13 +684,13 @@ class Person {
 		});
 		if( patientsRemaining.length <= 0 ) {
 			this.objective = 'wait';
-			this.destinationNodeId = null;
+			this.destinationNodeId = false;
 			this.chatBuffer.push("Awaiting further instructions.");
 		}
 		else {
 			this.chatBuffer.push("Should I evac, or keep searching for others?");
 			this.objective = 'wait';
-			this.destinationNodeId = null;
+			this.destinationNodeId = false;
 		}
 	}
 	onArriveAt() {
@@ -429,10 +715,13 @@ class Person {
 	}
 	getPersonalMoveSpeed() {
 		var moveSpeed = 1.38;	// Human default walk speed
-		if( this.injuryList.length > 0 ) {
-			moveSpeed *= 0.5;
-		}
-		if( this.objective = 'search' ) {
+		let issueList = this.getIssueList();
+		let issueModifier = 1.0;
+		$.each(issueList,function(index,issue) {
+			issueModifier = Math.min(issueModifier,issue.speed);
+		});
+		moveSpeed *= issueModifier;
+		if( this.objective == 'search' ) {
 			moveSpeed *= 0.5;
 		}
 		return moveSpeed;
@@ -444,67 +733,138 @@ class Person {
 		}
 		return moveSpeed;
 	}
+	getIssueList() {
+		let self = this;
+		let issueList = [];
+		$.each(IssueType,function(issueId,issueType) {
+			if( issueType.test.apply(self) ) {
+				issueList.push({
+					speed: issueType.speed,
+					effort: issueType.effort,
+					description: issueType.describe.apply(this)
+				});
+			}
+		});
+		$.each(this.body.injuryList,function(index,injury) {
+			issueList.push({
+				severity: injury.severity,
+				speed: InjurySeverity[injury.severity].speed,
+				effort: InjurySeverity[injury.severity].effort,
+				description: "has a "+injury.description
+			});
+		});
+		return issueList;
+	}
+	textAssess() {
+		let s = 'Patient '+this.name+' ';
+		debugger;
+		let issueList = this.getIssueList();
+		s += issueList.joinMember('description',', ');
+		return s;
+	}
 
 	determineAction() {
-		var self = this;
+		let self = this;
+		let nextAction = null;
 
-		function add(id,effort,duration,fn) {
-			self.actionList.push({
+		function add(id,effortPerSecond,duration,fn) {
+			function none(action) { return action.dt; }
+			nextAction = {
 				id: id,
-				effort: effort,
+				effortPerSecond: effortPerSecond,
 				duration: duration,
 				timeRemaining: duration,
 				dt: false,
-				firstTouch: false,
-				fn: fn
-			});
+				onStart: fn.onStart || none,
+				onTick: fn.onTick || none,
+				onComplete: fn.onComplete || none,
+				onAbort: fn.onAbort || none
+			};
 		}
 
 		function testMove() {
-			if( this.destinationNodeId === null || this.destinationNodeId == this.nodeId ) {
+			if( this.destinationNodeId === false || this.destinationNodeId == this.nodeId ) {
 				return;
 			}
 			let path = game.pathFinder.find(this.nodeId,this.destinationNodeId);
 			if( path !== false && path.length > 1 && this.nodeId != path[1].id ) {
 				var node = this.myNode();
-				var destNode = path[1];
-				var metersPerSec = this.getMoveSpeed();
-				var distance = getDistance(this,destNode);
-				add( 'move', distance, distance/metersPerSec, function(action) {
-					//this.chatBuffer.push("path: "+path.join('->'));
-					var distanceRemaining = getDistance(this,destNode);
-					var distancePossible = (action.dt * metersPerSec)+0.01;	// add 0.01 to handle precision problems.
-					if( distancePossible >= distanceRemaining ) {
-						this.nodeId = destNode.id;
-						this.setPosition(destNode);
-						this.onArriveAt(this.nodeId);
-						var timeTaken = action.dt * (distanceRemaining/distancePossible);
-						// NASTY HACK - after completing a move, there is some timeRemaining
-						// in the action, so we forcibly get rid of it.
-						action.timeRemaining = timeTaken;
-						return timeTaken;
+				this.nextNode = path[1];
+				let metersPerSec = this.getMoveSpeed();
+				let mode = MoveMode[node.to[this.nextNode.id]];
+				metersPerSec *= mode.speed;
+
+				add( 'move', mode.effortPerSecond, 99999, {
+					onTick: function(action) {
+
+						//this.chatBuffer.push("path: "+path.join('->'));
+						this.lastMoveTime = game.clock.time;
+						if( !this.nextNode ) throw "getTraffic can not work without a next node.";
+						var opposingtraffic = this.land.getTraffic(this.myTraffic(true),this.id);
+						this.isAwaitingTraffic = ( opposingtraffic.length && mode.pass == false );
+						if( this.isAwaitingTraffic ) {
+							return action.dt;
+						}
+						var distanceRemaining = getMapDistance(this,this.nextNode);
+						var distancePossible = (action.dt * metersPerSec)+0.01;	// add 0.01 to handle precision problems.
+						if( distancePossible >= distanceRemaining ) {
+							this.nodeId = this.nextNode.id;
+							this.setPosition(this.nextNode);
+							this.onArriveAt(this.nodeId);
+							this.nextNode = null;	// means we've arrived, and the hall is clear
+							if( this.destinationNextNodeId !== false ) {
+								this.destinationNodeId = this.destinationNextNodeId;
+								this.destinationNextNodeId = false;
+							}
+
+							var timeTaken = action.dt * (distanceRemaining/distancePossible);
+							// NASTY HACK - after completing a move, there is some timeRemaining
+							// in the action, so we forcibly get rid of it.
+							action.timeRemaining = timeTaken;
+							return timeTaken;
+						}
+						var travelPct = (distancePossible/distanceRemaining);
+						var dx = this.nextNode.x-this.x;
+						var dy = this.nextNode.y-this.y;
+						this.setPosition({ x: this.x+(dx*travelPct), y: this.y+(dy*travelPct) });
+						return action.dt;
 					}
-					var travelPct = (distancePossible/distanceRemaining);
-					var dx = destNode.x-this.x;
-					var dy = destNode.y-this.y;
-					this.setPosition({ x: this.x+(dx*travelPct), y: this.y+(dy*travelPct) });
-					return action.dt;
+				});
+			}
+		}
+
+		function testAssessPatient() {
+			if( this.objective == 'assess' && this.toAssess ) {
+				let patient = this.toAssess;
+				this.toAssess = null;
+				add('assess', Effort.talk, 30, {
+					onComplete: function(action) {
+						let message = patient.textAssess();
+						self.chatBuffer.push(message);
+					}
 				});
 			}
 		}
 
 		function testEvacuatePatient() {
+			if( this.objective == 'evacuate' ) {
+				//debug.log(this.name+' testing evacuate');
+				if( !this.evacuatingPerson ) {
+					//debug.log('   and currently evacuating nobody!');
+				}
+			}
 			if( this.objective == 'evacuate' && !this.evacuatingPerson ) {
 				$.each(game.mission.people.personList,function(personId,person) {
 					if( !self.isPatient && person.isPatient && person.nodeId == self.nodeId ) {
-						add( 'startEvacuatingPatient', 1, 30, function(action) {
-							if( action.firstTouch ) {
+						debug.log('  found '+person.name+' at '+self.nodeId);
+						add( 'startEvacuatingPatient', Effort.talk, 30, {
+							onStart: function(action) {
+								debug.log(self.name+' claiming evac of '+person.name);
 								self.chatBuffer.push("I am evacuating "+person.name+" to "+game.mission.land.find(self.destinationNodeId).name+".");
-								self.evacuatingPerson = person;
-								person.objective = 'evacuate';
-								person.destinationNodeId = self.destinationNodeId;
+							},
+							onComplete: function(action) {
+								self.evacuatingPersonCouple(person);
 							}
-							return action.dt;
 						});
 					}
 				});
@@ -516,11 +876,10 @@ class Person {
 					return self.nodeId == person.nodeId && person.isPatient && !person.foundByPersonId ? person : false;
 				});
 				if( patientsFound.length > 0 ) {
-					add('foundPatient',1,10,function(action) {
-						if( action.firstTouch ) {
+					add('foundPatient',Effort.talk,10,{
+						onStart: function(action) {
 							this.onFindPatient(patientsFound);
 						}
-						return action.dt;
 					});
 				}
 			}
@@ -529,39 +888,65 @@ class Person {
 		let testList = [
 			testFindPatient,
 			testEvacuatePatient,
+			testAssessPatient,
 			testMove
 		];
 
 		var index = 0;
-		var timeout = 10;
-		while( index < testList.length && this.actionList.length == 0 && --timeout > 0 ) {
+		while( index < testList.length && nextAction === null ) {
 			testList[index].apply(this);
 			index += 1;
 		}
-		if( timeout <= 0 ) {
-			throw "determineAction timed out.";
+		if( !nextAction && this.orderList.length ) {
+			this.onOrder(this.orderList.shift());
 		}
+		if( nextAction ) {
+			debug.log(this.name+' action='+nextAction.id);
+		}
+		return nextAction;
 	}
 	takeAction() {
 		let timeRemaining = game.clock.dt;
-		let timeout = 100;
+		let timeout = 1000;
 		while( timeRemaining > 0 && --timeout > 0 ) {
-			if( this.actionList.length <= 0 ) {
-				this.determineAction();
+			if( this.actionList.length <= 0 || this.actionList[0].id == 'move' ) {
+				let nextAction = this.determineAction();
+				if( nextAction ) {
+					if( this.actionList.length <= 0 || this.actionList[0].id != nextAction.id ) {
+						this.actionList[0] = nextAction;
+					}
+				}
 				if( this.actionList.length == 0 ) {
 					break;
 				}
 			}
 			var action = this.actionList[0];
-			action.firstTouch = (action.dt === false);
-			action.dt = Math.min(action.timeRemaining,timeRemaining);
-			this.stamina -= (action.effort*(action.dt/action.duration)) / 1000;
-			let timeTaken = action.fn.apply(this,[action]);
-			action.timeRemaining -= timeTaken;
-			timeRemaining -= timeTaken;
-			if( action.timeRemaining <= 0 ) {
-				this.actionList.shift();
+			let timeTaken = 0;
+
+			// ON START
+			if( action.dt === false ) {
+				action.dt = 0;
+				action.onStart.apply(this,[action]);
 			}
+			// ON TICK
+			else {
+				action.dt = Math.min(action.timeRemaining,timeRemaining);
+				this.body.stamina -= (action.effort*(action.dt/action.duration)) / 1000;
+				timeTaken = action.onTick.apply(this,[action]);
+			}
+			// IMPORTANT: only run if the current action was NOT aborted
+			if( this.actionList[0] === action ) {
+				action.timeRemaining -= timeTaken;
+				if( action.timeRemaining <= 0 ) {
+					// ON COMPLETE
+					action.onComplete.apply(this,[action]);
+					if( this.actionList[0] === action ) {
+						// Just in cast the action was aborted during onComplete. Should never happen. Famous last words.
+						this.actionList.shift();
+					}
+				}
+			}
+			timeRemaining -= timeTaken;
 		}
 		if( timeout <= 0 ) {
 			throw "takeAction timed out.";
@@ -581,7 +966,7 @@ class Node {
 		this.isEntrance = data.isEntrance;
 		this.x = data.x;
 		this.y = data.y;
-		this.connectionList = data.connectionList;
+		this.to = data.to;
 	}
 	extent() {
 		return { x: this.x, y: this.y };
@@ -606,7 +991,7 @@ class PathFinder {
 			if( !nodeList[nodeId] ) throw "pathfind no such node "+nodeId;
 			from[nodeId] = fromNodeId;
 			count += 1;
-			$.each(nodeList[nodeId].connectionList,function(index,toNodeId) {
+			$.each(nodeList[nodeId].to,function(toNodeId,mode) {
 				if( !nodeList[toNodeId] ) throw "pathfind no such connection from "+nodeId+" to "+toNodeId;
 				let toNode = nodeList[toNodeId];
 				if( toNode.id != fromNodeId && from[toNode.id] === undefined ) {
@@ -634,12 +1019,18 @@ class People {
 		this.personList = $.extend(true,{},personList);
 		this.teamList = [];
 		this.land = land;
+		land.people = this;
 		$.each(this.personList,function(index,person) {
 			person.land = land;
 			person.setPosition(person.myNode());
 			if( !person.isPatient ) {
 				person.isRescuer = true;
 			}
+			person.visual = {
+				rand: Math.PI*2*Math.random(),
+				x: false,
+				y: false
+			};
 		});
 		$.each(this.personList,function(index,person) {
 			person.pitch = 0.5+Math.random()*1.0;
@@ -684,10 +1075,24 @@ class People {
 
 class Land {
 	constructor(nodeList,surveyWidth,surveyHeight) {
+		var self = this;
+		this.people = false;
 		this.nodeList = $.extend(true,{},nodeList);
 		$.each( this.nodeList, function(nodeId,node) {
 			node.x = node.x * surveyWidth / 1000.0;
 			node.y = node.y * surveyHeight / 1000.0;
+			node.to = node.to || {};
+			for( let toNodeId in node.to ) {
+				if( !self.nodeList[toNodeId] ) {
+					throw "Node "+nodeId+" bad connection "+toNodeId;
+				}
+				if( MoveMode[self.nodeList[toNodeId]] ) {
+					throw "Node "+nodeId+" unknown move mode "+self.nodeList[toNodeId];
+				}
+				if( !self.nodeList[toNodeId].to[nodeId] ) {
+					self.nodeList[toNodeId].to[nodeId] = node.to[toNodeId];
+				}
+			}
 		});
 	}
 	query(fn) {
@@ -709,6 +1114,19 @@ class Land {
 	getPosition(nodeId) {
 		if( !this.nodeList[nodeId] ) throw "Unknown node "+nodeId;
 		return { x:this.nodeList[nodeId].x, y:this.nodeList[nodeId].y };
+	}
+	getOccupants(place,askerId) {	// askedId can be undefined, to get all occupants
+		let occupantList = this.people.query(function(person) {
+			return person.id != askerId && person.myPlace() == place ? person : false;
+		});
+		return occupantList;
+	}
+	// This gets everyone going a certain direction
+	getTraffic(traffic,askerId) {	// askedId can be undefined, to get all occupants
+		let trafficList = this.people.query(function(person) {
+			return person.id != askerId && person.myTraffic() == traffic && !person.isAwaitingTraffic ? person : false;
+		});
+		return trafficList;
 	}
 	tick() {
 	}
@@ -733,15 +1151,7 @@ class Mission {
 	}
 	executeOrder(order) {
 		let person = order.person;
-		let node = order.node;
-		if( order.verb == 'form' ) {
-			this.people.teamForm('team '+order.person.name,order.node,order.roster);
-		}
-		if( order.verb == 'search' || order.verb == 'evacuate') {
-			person.objective = order.verb;
-			person.destinationNodeId = node.id;
-			person.onOrder(order);
-		}
+		person.orderAdd( order );
 	}
 	tick() {
 		this.people.tick();
@@ -775,6 +1185,28 @@ class Whiteboard {
 	}
 }
 
+let VerbList = {
+	search: {
+		ask:['node']
+	},
+	evacuate: {
+		ask:['patient'],
+		disableWhen: function() { return !this.choices.patient || this.choices.patient.length <= 0; }
+	},
+	return: {
+		ask:[],
+		disableWhen: function() { return this.order.person && this.order.person.nodeId == game.mission.lookup.node.command.id; }
+	},
+	assess: {
+		ask:['patient'],
+		disableWhen: function() { return !this.choices.patient || this.choices.patient.length <= 0; }
+	},
+	form: {
+		ask:['rescuers']
+	}
+};
+
+
 class Orders {
 	constructor(peopleQuery,landQuery) {
 		this.peopleQuery = peopleQuery;
@@ -783,44 +1215,60 @@ class Orders {
 		this.state = -1;	// 0 means populate, 1/2/3 = stages, 4 means execute
 		this.choices = {};
 		this.reset();
-		this.verbList = {
-			'search': ['node'],
-			'evacuate': ['node'],
-			'form': ['roster']
-		};
 	}
 	reset() {
 		this.state = 0;
 		this.order.person = null;
 		this.order.verb = "";
 		this.order.node = null;
-		this.order.roster = [];
-		var colId = '#order_choices';
+		this.order.rescuers = [];
+		this.order.patient = null;
+		var colId = '#orderChoices';
 		$(colId).empty();
 	}
 	populate() {
+		let self = this;
 		this.choices.person = this.peopleQuery(function(person) {
 			return (!person.isPatient && !person.isYou ? person : false);
 		});
-		this.choices.verb = query(this.verbList,function(verb,key) { return key; });
+		// Any node with a name
+		this.peopleQuery(function(person) {
+			let node = person.myNode();
+			if( person.isPatient && person.foundByPersonId && !node.name ) {
+				node.nameTemporary = 'Patient '+person.name;
+			}
+		});
 		this.choices.node = this.landQuery(function(node) {
-			return node.name ? node : false;
+			return node.name || node.nameTemporary ? node : false;
+		});
+		this.choices.rescuers = this.peopleQuery(function(person) {
+			return (!person.isPatient && !person.team && !person.isYou ? person : false);
+		});
+		this.choices.patient = this.peopleQuery(function(person) {
+			return (person.isPatient && self.order.person && self.order.person.canSee(person) ? person : false);
+		});
+		// WARNING: must come last, so that choices.patient can be filled first.
+		this.choices.verb = query(VerbList,function(verb,key) {
+			if( verb.disableWhen && verb.disableWhen.apply(self) ) {
+				return "<span class='disableChoice'>"+key+"</span>";
+			}
+			return key;
 		});
 	}
 	present(column,choices) {
-		var colId = '#order_choices';
+		let colId = '#orderChoices';
 		$(colId).empty();
-		var self = this;
+		let self = this;
 		$.each(choices,function(index,choice) {
-			var text = typeof choice == 'string' ? choice : choice.name;
+			var text = typeof choice == 'string' ? choice : (choice.name || choice.nameTemporary);
 			$("<a src='javascript:void 0' class='choice'>"+text+"</a>")
 				.appendTo(colId)
 				.click( function() {
 					if( self.state == 1 ) { self.order.person = choice; }
 					if( self.state == 2 ) { self.order.verb = choice; }
-					if( self.state == 3 ) { self.order[self.verbList[self.order.verb][0]] = choice; }
-					if( self.state == 4 ) { self.order[self.verbList[self.order.verb][1]] = choice; }
-					if( self.state == 5 ) { self.order[self.verbList[self.order.verb][2]] = choice; }
+					if( self.state == 3 ) { self.order[VerbList[self.order.verb].ask[0]] = choice; }
+					if( self.state == 4 ) { self.order[VerbList[self.order.verb].ask[1]] = choice; }
+					if( self.state == 5 ) { self.order[VerbList[self.order.verb].ask[2]] = choice; }
 					self.stateAdvance();
 				})
 				.append("<br />");
@@ -833,18 +1281,18 @@ class Orders {
 		this.reset();
 	}
 	stateAdvance() {
-		this.populate();
 		this.state += 1;
-		if( this.order.verb && this.state > 2+this.verbList[this.order.verb].length ) {
+		if( this.order.verb && this.state > 2+VerbList[this.order.verb].ask.length ) {
 			this.execute();
 			return;
 		}
+		this.populate();
 		let choiceList = null;
 		if( this.state == 1 ) { choiceList = this.choices.person; }
 		if( this.state == 2 ) { choiceList = this.choices.verb; }
-		if( this.state == 3 ) { choiceList = this.choices[this.verbList[this.order.verb][0]]; }
-		if( this.state == 4 ) { choiceList = this.choices[this.verbList[this.order.verb][1]]; }
-		if( this.state == 5 ) { choiceList = this.choices[this.verbList[this.order.verb][2]]; }
+		if( this.state == 3 ) { choiceList = this.choices[VerbList[this.order.verb].ask[0]]; }
+		if( this.state == 4 ) { choiceList = this.choices[VerbList[this.order.verb].ask[1]]; }
+		if( this.state == 5 ) { choiceList = this.choices[VerbList[this.order.verb].ask[2]]; }
 		this.present(this.state,choiceList);
 		this.summarize();
 	}
@@ -888,8 +1336,8 @@ class UX {
 
 class Game {
 	constructor(data){
-		var self = this;
-		this.clock = new Clock(15.0);
+		let self = this;
+		this.clock = new Clock(30.0);
 		this.mission = data.mission;
 		this.pathFinder = new PathFinder(this.mission.land.nodeList);
 		this.whiteboard = new Whiteboard(this.mission.people);
@@ -982,13 +1430,38 @@ function getMissionList() {
 				isPatient: false,
 				objective: "wait"
 			}),
-			'S': new Person({
-				name: "Smeerfly",
+			'pJ': new Person({
+				name: "Josiah",
 				gender: 'm',
 				nodeId: 'tc',
 				isPatient: true,
-				injuryList: [{location: 'left ankle', type: 'sprain'}],
+				body: {
+					injuryList: [{severity: InjurySeverity.mustBeHelped.id, description: "sprained left ankle"}]
+				},
 				objective: "wait"
+			}),
+			'pK': new Person({
+				name: "Kathy",
+				gender: 'f',
+				nodeId: 'a7',
+				isPatient: true,
+				body: {
+					injuryList: [{severity: InjurySeverity.requiresStretcher.id, description: "broken right tibia"}]
+				},
+				objective: "wait"
+			}),
+			'pL': new Person({
+				name: "Larry",
+				gender: 'f',
+				nodeId: '2b',
+				isPatient: true,
+				isLost: true,
+				body: {
+					stamina: BodyLevels.staminaExhausted,
+					temperature: BodyLevels.temperatureHypothermia,
+					injuryList: [{severity: InjurySeverity.canWalk.id, description: "sprained left wrist"}]
+				},
+				objective: "wander"
 			})
 		}),
 		nodeList: giveIds({
@@ -997,155 +1470,191 @@ function getMissionList() {
 				isCommand: true,
 				x: 250,
 				y: 880,
-				connectionList: [
-					'en'
-				]
+				to: { 'en': 'walk' }
 			}),
 			'en': new Node({
 				name: "Entrance",
 				isEntrance: true,
 				x: 67,
 				y: 925,
-				connectionList: [
-					1, 'nb'
-				]
+				to: { 'nb': 'stoop' }
 			}),
 			'nb': new Node({
 				name: "Natural Bridge",
 				x: 111,
 				y: 839,
-				connectionList: [
-					'en', '2a'
-				]
+				to: { '2a': 'walk' }
 			}),
 			'2a': new Node({
 				x: 168,
 				y: 781,
-				connectionList: [
-					'nb', '2b'
-				]
+				to: { '2b': 'stoop' }
 			}),
 			'2b': new Node({
 				x: 188,
 				y: 667,
-				connectionList: [
-					'2a', '2b1'
-				]
+				to: { '2b1': 'stoop' }
 			}),
 			'2b1': new Node({
 				x: 229,
 				y: 650,
-				connectionList: [
-					'2b', '2c'
-				]
+				to: { '2c': 'walk' }
 			}),
 			'2c': new Node({
 				x: 254,
 				y: 613,
-				connectionList: [
-					'2b1', '2d'
-				]
+				to: { '2d': 'squeeze' }
 			}),
 			'2d': new Node({
 				x: 293,
 				y: 594,
-				connectionList: [
-					'2c', '2e'
-				]
+				to: { '2e': 'walk' }
 			}),
 			'2e': new Node({
 				x: 352,
 				y: 643,
-				connectionList: [
-					'2d', 'tc'
-				]
+				to: { 'tc': 'walk' }
 			}),
 			'tc': new Node({
 				name: "Travis Country Room",
 				x: 424,
 				y: 570,
-				connectionList: [
-					'2e', 'rr'
-				]
+				to: { 'rr': 'walk', 'b1': 'walk' }
 			}),
 			'a1': new Node({
 				x: 385,
 				y: 490,
-				connectionList: [
-					'tc', 'rr'
-				]
+				to: { 'rr': 'walk' }
 			}),
 			'rr': new Node({
 				name: "Red Room",
 				x: 380,
 				y: 388,
-				connectionList: [
-					'a1', 'a2'
-				]
+				to: { 'a2': 'walk' }
 			}),
 			'a2': new Node({
 				x: 353,
 				y: 346,
-				connectionList: [
-					'rr', 'a3'
-				]
+				to: { 'a3': 'walk' }
 			}),
 			'a3': new Node({
 				x: 398,
 				y: 245,
-				connectionList: [
-					'a2', 'a4'
-				]
+				to: { 'a4': 'crawl' }
 			}),
 			'a4': new Node({
 				x: 419,
 				y: 258,
-				connectionList: [
-					'a3', 'a5'
-				]
+				to: { 'a5': 'crawl' }
 			}),
 			'a5': new Node({
 				x: 434,
 				y: 234,
-				connectionList: [
-					'a4', 'a6'
-				]
+				to: { 'a6': 'crawl' }
 			}),
 			'a6': new Node({
 				x: 452,
 				y: 211,
-				connectionList: [
-					'a5', 'a7'
-				]
+				to: { 'a7': 'crawl' }
 			}),
 			'a7': new Node({
 				x: 469,
 				y: 225,
-				connectionList: [
-					'a6', 'a7a', 'a8'
-				]
+				to: { 'a7a': 'crawl', 'a8': 'stoop' }
 			}),
 			'a7a': new Node({
 				x: 464,
 				y: 264,
-				connectionList: [
-					'a7'
-				]
+				to: { }
 			}),
 			'a8': new Node({
 				x: 539,
 				y: 187,
-				connectionList: [
-					'a7', 'a9'
-				]
+				to: { 'NT': 'crawl' }
 			}),
-			'a9': new Node({
+			'NT': new Node({
 				name: "Northeast Terminus",
 				x: 539,
 				y: 68,
-				connectionList: [
-					'a8'
-				]
+				to: { }
+			}),
+			'b1': new Node({
+				x: 463,
+				y: 600,
+				to: { 'b2': 'crawl' }
+			}),
+			'b2': new Node({
+				x: 505,
+				y: 596,
+				to: { 'b3': 'stoop' }
+			}),
+			'b3': new Node({
+				x: 552,
+				y: 640,
+				to: { 'b4': 'stoop' }
+			}),
+			'b4': new Node({
+				x: 598,
+				y: 666,
+				to: { 'b5': 'stoop' }
+			}),
+			'b5': new Node({
+				x: 642,
+				y: 664,
+				to: { 'b6': 'stoop' }
+			}),
+			'b6': new Node({
+				x: 696,
+				y: 732,
+				to: { 'AL': 'walk' }
+			}),
+			'AL': new Node({
+				name: 'Ant Lion Room',
+				x: 707,
+				y: 720,
+				to: { 'b7': 'walk' }
+			}),
+			'b7': new Node({
+				x: 716,
+				y: 690,
+				to: { 'b8': 'squeeze' }
+			}),
+			'b8': new Node({
+				x: 769,
+				y: 654,
+				to: { 'b9': 'walk' }
+			}),
+			'b9': new Node({
+				x: 910,
+				y: 714,
+				to: { 'b10': 'squeeze' }
+			}),
+			'b10': new Node({
+				x: 901,
+				y: 807,
+				to: { 'b11': 'walk', 'SR': 'walk' }
+			}),
+			'b11': new Node({
+				x: 857,
+				y: 825,
+				to: { }
+			}),
+			'SR': new Node({
+				name: 'Surprise Room',
+				x: 904,
+				y: 879,
+				to: { 'b14': 'walk' }
+			}),
+			'b14': new Node({
+				x: 950,
+				y: 867,
+				to: { 'ST': 'crawl' }
+			}),
+			'ST': new Node({
+				name: "South Terminus",
+				x: 962,
+				y: 919,
+				to: {}
 			})
 		})
 	})
@@ -1185,7 +1694,7 @@ $(document).ready(function() {
 <td style="width: 40%">
 <div id="orders">
 <div id="orderSummary"></div>
-<div id="order_choices"></div>
+<div id="orderChoices"></div>
 </div>
 </td>
 </tr></table>
