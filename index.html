@@ -757,7 +757,6 @@ class Person {
 	}
 	textAssess() {
 		let s = 'Patient '+this.name+' ';
-		debugger;
 		let issueList = this.getIssueList();
 		s += issueList.joinMember('description',', ');
 		return s;
